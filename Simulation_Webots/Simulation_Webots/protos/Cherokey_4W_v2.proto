@@ -1,0 +1,161 @@
+#VRML_SIM R2025a utf8
+PROTO Cherokey_4W_v2 [ 
+  field SFVec3f translation 0 0 0.02
+  field SFRotation rotation 0 1 0 0
+  field SFString controller "void"
+  field MFNode camera []
+  field MFNode sensors []
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    controller IS controller
+    children [
+      # Roue avant gauche
+      DEF Wheel1 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0.08 -0.08 -0.03
+        }
+        device [
+          DEF PS PositionSensor {
+            name "PS1"
+            resolution 0.0268
+          }
+          DEF Motor1 RotationalMotor {
+            name "Motor1"
+          }
+        ]
+        endPoint DEF Wheel1 Solid {
+          translation 0.08 -0.083 -0.0300001
+          rotation -0.577349 0.577351 0.577351 2.0944
+          children [
+            DEF WHEEL Shape {
+              appearance PBRAppearance {
+                roughness 1
+                metalness 0
+              }
+              geometry Cylinder {
+                height 0.025
+                radius 0.0325
+              }
+            }
+          ]
+          name "Wheel1"
+          boundingObject USE WHEEL
+          physics DEF Wheel Physics {
+            density -1
+            mass 0.2
+          }
+        }
+      }
+
+      # Roue avant droite
+      DEF Wheel2 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0.08 0.083 -0.03
+        }
+        device [
+          PositionSensor {
+            name "PS2"
+            resolution 0.0268
+          }
+          DEF Motor2 RotationalMotor {
+            name "Motor2"
+          }
+        ]
+        endPoint DEF Wheel2 Solid {
+          translation 0.08 0.083 -0.03
+          rotation 1 -5.5869e-11 5.5868e-11 1.5708
+          children [ USE WHEEL ]
+          name "Wheel2"
+          boundingObject USE WHEEL
+          physics USE Wheel
+        }
+      }
+
+      # Roue arrière gauche
+      DEF Wheel3 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor -0.08 -0.083 -0.03
+        }
+        device [
+          PositionSensor {
+            name "PS3"
+            resolution 0.0268
+          }
+          DEF Motor3 RotationalMotor {
+            name "Motor3"
+          }
+        ]
+        endPoint DEF Wheel3 Solid {
+          translation -0.08 -0.083 -0.03
+          rotation 1 0 0 1.5708
+          children [ USE WHEEL ]
+          name "Wheel3"
+          boundingObject USE WHEEL
+          physics USE Wheel
+        }
+      }
+
+      # Roue arrière droite
+      DEF Wheel4 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor -0.08 0.083 -0.03
+        }
+        device [
+          PositionSensor {
+            name "PS4"
+            resolution 0.0268
+          }
+          DEF Motor4 RotationalMotor {
+            name "Motor4"
+          }
+        ]
+        endPoint DEF Wheel4 Solid {
+          translation -0.08 0.083 -0.03
+          rotation 1 0 0 1.5708
+          children [ USE WHEEL ]
+          name "Wheel4"
+          boundingObject USE WHEEL
+          physics USE Wheel
+        }
+      }
+
+      # Châssis du robot
+      DEF Body Shape {
+        appearance PBRAppearance {}
+        geometry Mesh {
+          url [
+            "../mesh/Cherokey_chassis.dae"
+          ]
+        }
+      }
+
+      # Capteurs de type caméra (modifiables dynamiquement)
+      Group {
+        children IS camera
+      }
+
+      # Capteurs de type distance (modifiables dynamiquement)
+      Group {
+        children IS sensors
+      }
+    ]
+
+    name "Cherokey_4W_v2"
+
+    boundingObject Box {
+      size 0.1 0.1 0.1
+    }
+
+    physics Physics {
+      density -1
+      mass 1.5
+    }
+  }
+}

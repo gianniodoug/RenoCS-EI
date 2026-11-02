@@ -1,0 +1,32 @@
+#VRML_SIM R2025a utf8
+PROTO PiCamera [
+  field SFVec3f translation 0.10402 0 0.0696411
+  field SFRotation rotation 0 1 0 0
+  field SFFloat noise 0.01
+]
+{
+  Camera {
+    translation IS translation
+    rotation IS rotation
+    children [
+      Shape {
+        appearance PBRAppearance {
+          roughness 1
+        }
+        geometry Box {
+          size 0.001 0.001 0.001
+        }
+      }
+    ]
+    name "PiCam"
+    model "v2.1"
+    fieldOfView 1.0856
+    width 1920
+    height 1080
+    near 0.1
+    noise IS noise
+    focus Focus {
+      focalLength 4.74
+    }
+  }
+}

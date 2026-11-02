@@ -1,0 +1,193 @@
+#VRML_SIM R2023b utf8
+
+EXTERNPROTO "../protos/URM37.proto"
+
+# --- PROTO du robot ---
+PROTO Cherokey_4W_v3 [
+  field SFVec3f translation 0 0 0.02
+  field SFRotation rotation 0 1 0 0
+  field SFString controller "basique"
+  field SFColor robotColor 0 0 0
+  field MFNode camera []
+  field MFNode distanceSensor [ URM37 { } ]
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    controller IS controller
+
+    children [
+
+      # --- Roue avant gauche ---
+      DEF Wheel1 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0.08 -0.08 -0.03
+        }
+        device [
+          DEF PS PositionSensor {
+            name "PS1"
+            resolution 0.0268
+          }
+          DEF Motor1 RotationalMotor {
+            name "Motor1"
+          }
+        ]
+        endPoint DEF Wheel1 Solid {
+          translation 0.0799999999571692 -0.0829999999936244 -0.029988326982993578
+          rotation -0.5773489426101444 0.577350942670452 0.5773509222859947 2.0944000204447217
+          children [
+            DEF WHEEL Shape {
+              appearance PBRAppearance {
+                roughness 1
+                metalness 0
+              }
+              geometry Cylinder {
+                height 0.025
+                radius 0.0325
+              }
+            }
+          ]
+          name "Wheel1"
+          boundingObject USE WHEEL
+          physics DEF Wheel Physics {
+            density -1
+            mass 0.2
+          }
+        }
+      }
+
+      # --- Caméra (ajoutable ou modifiable) ---
+      Group {
+        children IS camera
+      }
+
+      # --- Roue avant droite ---
+      DEF Wheel2 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0.08 0.083 -0.03
+        }
+        device [
+          PositionSensor {
+            name "PS2"
+            resolution 0.0268
+          }
+          DEF Motor2 RotationalMotor {
+            name "Motor2"
+          }
+        ]
+        endPoint DEF Wheel2 Solid {
+          translation 0.08000000001317314 0.08300000000410028 -0.02998822875842959
+          rotation 1 -5.601768647034514e-11 5.606623056432915e-11 1.5707999999813564
+          children [ USE WHEEL ]
+          name "Wheel2"
+          boundingObject USE WHEEL
+          physics USE Wheel
+        }
+      }
+
+      # --- Roue arrière gauche ---
+      DEF Wheel3 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor -0.08 -0.083 -0.03
+        }
+        device [
+          PositionSensor {
+            name "PS3"
+            resolution 0.0268
+          }
+          DEF Motor3 RotationalMotor {
+            name "Motor3"
+          }
+        ]
+        endPoint DEF Wheel3 Solid {
+          translation -0.07999999996879785 -0.08300000001327411 -0.029988229030384797
+          rotation 1 8.801088601901439e-13 -8.313297444632746e-13 1.570799999980791
+          children [ USE WHEEL ]
+          name "Wheel3"
+          boundingObject USE WHEEL
+          physics USE Wheel
+        }
+      }
+
+      # --- Roue arrière droite ---
+      DEF Wheel4 HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor -0.08 0.083 -0.03
+        }
+        device [
+          PositionSensor {
+            name "PS4"
+            resolution 0.0268
+          }
+          DEF Motor4 RotationalMotor {
+            name "Motor4"
+          }
+        ]
+        endPoint DEF Wheel4 Solid {
+          translation -0.07999999998682696 0.08299999998672515 -0.02998822681146396
+          rotation 1 1.1046104156358747e-12 -1.054963638373947e-12 1.5707999999807951
+          children [ USE WHEEL ]
+          name "Wheel4"
+          boundingObject USE WHEEL
+          physics USE Wheel
+        }
+      }
+
+      # --- Servo avec capteur personnalisable ---
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 0 1
+          anchor 0.071 -0.001 0.115
+        }
+        device [
+          PositionSensor {
+            name "Capteur_servo"
+          }
+          RotationalMotor {
+            name "servomoteur"
+            minPosition -1.58
+            maxPosition 1.58
+          }
+        ]
+        endPoint Solid {
+	  translation 0.0 0.00 -0.025
+          children IS distanceSensor
+	  name "URM37"
+	  boundingObject Sphere{
+ 	    radius 0.001
+	  }
+	  physics Physics{
+	    density -1
+	    mass 0.01
+	  }
+        }
+      }
+
+      # --- Corps du robot ---
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS robotColor
+          roughness 0.3
+          metalness 0.5
+        }
+        geometry Mesh {
+          url [ "../mesh/Cherokey_chassis_v2.dae" ]
+        }
+      }
+    ]
+
+    name "Cherokey_4W_v3"
+    boundingObject Box {
+      size 0.1 0.1 0.09
+    }
+    physics Physics {
+      density -1
+      mass 1.5
+    }
+  }
+}

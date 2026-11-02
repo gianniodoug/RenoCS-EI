@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Webots
+build/
+*.exe
+*.o
+*.d
+.*.wbproj
+.*.jpg
+*.zip
+Thumbs.db
+desktop.ini

@@ -1,0 +1,192 @@
+#VRML_SIM R2025a utf8
+PROTO Cherokey_4W_v1 
+[
+  field SFVec3f translation 0 0 0.02
+  field SFRotation rotation 0 1 0 0      # permet de modifier les paramètres dans l'interface 
+  field SFString controller "void"	 # Webots
+  field SFRotation cameraRotation 0 1 0 0
+]
+{
+  Robot {
+  translation IS translation
+  rotation    IS rotation
+  children [
+    DEF Wheel1 HingeJoint {
+      jointParameters HingeJointParameters {
+        axis 0 1 0
+        anchor 0.08 -0.08 -0.03
+      }
+      device [
+        DEF PS PositionSensor {
+          name "PS1"
+          resolution 0.0268
+        }
+        DEF Motor1 RotationalMotor {
+          name "Motor1"
+        }
+      ]
+      endPoint DEF Wheel1 Solid {
+        translation 0.08 -0.083 -0.030000099999999974
+        rotation -0.5773489358556703 0.5773509358554487 0.5773509358554488 2.0943999999999994
+        children [
+          DEF WHEEL Shape {
+            appearance PBRAppearance {
+              roughness 1
+              metalness 0
+            }
+            geometry Cylinder {
+              height 0.025
+              radius 0.0325
+            }
+          }
+        ]
+        name "Wheel1"
+        boundingObject USE WHEEL
+        physics DEF Wheel Physics {
+          density -1
+          mass 0.2
+        }
+      }
+    }
+    DEF Camera Camera {
+        translation 0.1 0 0.03
+        rotation IS cameraRotation
+        children [
+          Shape {
+            appearance PBRAppearance {
+            }
+            geometry Box {
+              size 0.01 0.01 0.01
+            }
+          }
+        ]
+        width 640
+        height 480
+	name "PiCam"
+      } 
+
+    DEF US DistanceSensor {
+      translation 0.071 -0.001 0.14
+      children [
+        Shape {
+          appearance PBRAppearance {
+            roughness 1
+          }
+          geometry Box {
+            size 0.0001 0.0001 0.0001
+          }
+        }
+      ]
+      name "URM37"
+      lookupTable [
+        0.004 200 0.01
+        0.1 500 0.01
+        0.2 500 0.01
+        0.25 1250 0.01
+        0.5 2500 0.01
+        0.75 3750 0.01
+        1 5000 0.01
+      ]
+      type "sonar"
+      numberOfRays 10
+      aperture 0.52
+      resolution 0.001
+      redColorSensitivity 0
+    }
+    DEF Wheel2 HingeJoint {
+      jointParameters HingeJointParameters {
+        axis 0 1 0
+        anchor 0.08 0.083 -0.03
+      }
+      device [
+        PositionSensor {
+          name "PS2"
+          resolution 0.0268
+        }
+        DEF Motor2 RotationalMotor {
+          name "Motor2"
+        }
+      ]
+      endPoint DEF Wheel2 Solid {
+        translation 0.08 0.083 -0.03
+        rotation 1 -5.586943940295933e-11 5.5868418844735545e-11 1.5707999999999966
+        children [
+          USE WHEEL
+        ]
+        name "Wheel2"
+        boundingObject USE WHEEL
+        physics USE Wheel
+      }
+    }
+    DEF Wheel3 HingeJoint {
+      jointParameters HingeJointParameters {
+        axis 0 1 0
+        anchor -0.08 -0.083 -0.03
+      }
+      device [
+        PositionSensor {
+          name "PS3"
+          resolution 0.0268
+        }
+        DEF Motor3 RotationalMotor {
+          name "Motor3"
+        }
+      ]
+      endPoint DEF Wheel3 Solid {
+        translation -0.08 -0.083 -0.03
+        rotation 1 -7.85044787527953e-16 0 1.5707999999999966
+        children [
+          USE WHEEL
+        ]
+        name "Wheel3"
+        boundingObject USE WHEEL
+        physics USE Wheel
+      }
+    }
+    DEF Wheel4 HingeJoint {
+      jointParameters HingeJointParameters {
+        axis 0 1 0
+        anchor -0.08 0.083 -0.03
+      }
+      device [
+        PositionSensor {
+          name "PS4"
+          resolution 0.0268
+        }
+        DEF Motor4 RotationalMotor {
+          name "Motor4"
+        }
+      ]
+      endPoint DEF Wheel4 Solid {
+        translation -0.08 0.083 -0.03
+        rotation 1 3.1401791501118107e-16 -2.355134362583858e-16 1.5707999999999973
+        children [
+          USE WHEEL
+        ]
+        name "Wheel4"
+        boundingObject USE WHEEL
+        physics USE Wheel
+      }
+    }
+    DEF Body Shape {
+      appearance PBRAppearance {
+      }
+      geometry Mesh {
+        url [
+          "../mesh/Cherokey_chassis.dae"
+        ]
+      }
+    }
+  ]
+  name "Cherokey_4W_v1"
+  boundingObject Box {
+    size 0.1 0.1 0.1
+  }
+  physics Physics {
+    density -1
+    mass 1.5
+  }
+  controller IS controller
+  }
+}
+
