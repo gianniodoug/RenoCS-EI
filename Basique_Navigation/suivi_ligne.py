@@ -6,8 +6,9 @@ import time
 from picamera2 import Picamera2
 from arduino import arduino
 
+
 # -------------------------
-# Initialisation caméra
+# INITIALISATION CAMERA
 # -------------------------
 
 camera = Picamera2()
@@ -19,88 +20,103 @@ camera.configure(
 camera.start()
 time.sleep(2)
 
+
 # -------------------------
-# Initialisation Arduino
+# INITIALISATION ARDUINO
 # -------------------------
 
 robot = arduino('/dev/ttyACM0')
 
 if not robot.connect():
-    print("Erreur de connexion Arduino")
     camera.stop()
-    raise SystemExit
+    raise RuntimeError("Erreur de connexion Arduino")
+
 
 # -------------------------
-# Paramètres du suivi
+# PARAMETRES DU SUIVI
 # -------------------------
 
 BASE_SPEED = 100
 KP = 0.04
 KD = 0.015
 previous_error = 0
+MAX_SPEED = 255
 
-MAX_SPEED = 200
-
-# -------------------------
-# Commande des moteurs
-# -------------------------
-
-def set_motors(left_speed, right_speed):
-
-    left_speed = int(max(-MAX_SPEED, min(MAX_SPEED, left_speed)))
-    right_speed = int(max(-MAX_SPEED, min(MAX_SPEED, right_speed)))
-
-    # Ordre : avant droit, avant gauche,
-    # arrière droit, arrière gauche
-    robot.SetMotors(
-        right_speed,
-        left_speed,
-        right_speed,
-        left_speed
-    )
 
 # -------------------------
-# Boucle principale
+# BOUCLE PRINCIPALE
 # -------------------------
 
 try:
     while True:
 
-        # 1. Récupération de l'image
+        # 1. Recuperation de l'image
         image = camera.capture_array()
 
         # 2. Conversion en niveaux de gris
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
         h, w = gray.shape
 
-        # 3. Sélection de la zone basse
-        roi = gray[int(h * 0.70):h, :]
+        # 3. Selection de la zone basse
+        roi = gray[int(h * 0.7):h, :]
 
-        # 4. Détection de la piste blanche
+        # 4. Detection de la ligne blanche
         _, binary = cv2.threshold(
             roi, 80, 255, cv2.THRESH_BINARY
         )
 
-        # 5. Calcul du barycentre
-        moments = cv2.moments(binary)
+        # 5. Positions des trois lignes de balayage
+        scan_positions = [
+            int(binary.shape[0] * 0.9),
+            int(binary.shape[0] * 0.75),
+            int(binary.shape[0] * 0.6)
+        ]
 
-        if moments["m00"] > 0:
+        centers = []
 
-            cx = int(moments["m10"] / moments["m00"])
+        for y in scan_positions:
+
+            white_pixels = np.where(binary[y, :] > 0)[0]
+
+            if len(white_pixels) > 0:
+
+                groups = np.split(
+                    white_pixels,
+                    np.where(np.diff(white_pixels) > 1)[0] + 1
+                )
+
+                group_centers = [
+                    int((g[0] + g[-1]) / 2)
+                    for g in groups if len(g) > 0
+                ]
+
+                cx_row = min(
+                    group_centers,
+                    key=lambda x: abs(x - w / 2)
+                )
+
+                centers.append(cx_row)
+
+        # 6. Calcul de l'erreur et correction PD
+        if len(centers) > 0:
+
+            cx = int(np.mean(centers))
 
             error = cx - w / 2
-
             derivative = error - previous_error
 
             correction = KP * error + KD * derivative
-
             previous_error = error
 
             left_speed = BASE_SPEED + correction
             right_speed = BASE_SPEED - correction
 
-            set_motors(left_speed, right_speed)
+            # Limitation des commandes
+            left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
+            right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+
+            # 7. Commande des moteurs physiques
+            robot.SetMotors(left_speed, right_speed)
 
             cv2.circle(
                 binary,
@@ -109,10 +125,9 @@ try:
             )
 
         else:
-            # Ligne perdue : arrêt de sécurité
             robot.Stop()
 
-        # Affichage pour le débogage
+        # 8. Affichage
         cv2.imshow("Camera", image)
         cv2.imshow("Detection ligne", binary)
 
@@ -123,8 +138,8 @@ except KeyboardInterrupt:
     pass
 
 finally:
-    # Arrêt et libération des ressources
     robot.Stop()
     robot.disconnect()
     camera.stop()
     cv2.destroyAllWindows()
+
