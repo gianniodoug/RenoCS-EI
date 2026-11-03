@@ -119,6 +119,23 @@ void QUADMOTOR_code() {
   setpoint[1] = nivM2;
   setpoint[2] = nivM3;
   setpoint[3] = nivM4;
+
+  
+  // Arresto immediato quando tutte le consigne sono zero
+  if (nivM1 == 0 && nivM2 == 0 &&
+      nivM3 == 0 && nivM4 == 0) {
+
+    for (int i = 0; i < 4; i++) {
+      value[i] = 0;
+      setpoint[i] = 0;
+    }
+
+    FRmotor.setvalue(0);
+    FLmotor.setvalue(0);
+    RRmotor.setvalue(0);
+    RLmotor.setvalue(0);
+  }
+
   
   //reponse de la commande
   if (obst==false)
