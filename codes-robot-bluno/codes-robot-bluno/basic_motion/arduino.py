@@ -87,3 +87,19 @@ class arduino:
     def  GetSpeed(self):
         vit1,vit2,vit3,vit4 = retrCmdi(self.serialport,b'P')
         return vit1,vit2,vit3,vit4
+    #######################################################
+    #   recuperation de la vitesse des moteurs
+    #######################################################
+    def SetMotors(self, left_speed, right_speed):
+
+        left_speed = int(left_speed)
+        right_speed = int(right_speed)
+
+        sendCmdi(
+             self.serialport,
+             b'C',
+             right_speed,
+             left_speed,
+             right_speed,
+             left_speed
+             )
