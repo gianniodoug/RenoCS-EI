@@ -1,4 +1,3 @@
-
 import numpy as np
 import cv2
 import time
@@ -41,6 +40,12 @@ KP = 0.04
 KD = 0.015
 previous_error = 0
 MAX_SPEED = 255
+
+# Paramètres de recherche de ligne
+SEARCH_SPEED = 25
+MAX_SEARCH_TIME = 1.0
+lost_since = None
+last_error_sign = 1
 
 
 # -------------------------
@@ -100,6 +105,7 @@ try:
         # 6. Calcul de l'erreur et correction PD
         if len(centers) > 0:
 
+            # Au moins un barycentre détecté
             cx = int(np.mean(centers))
 
             error = cx - w / 2
@@ -108,12 +114,23 @@ try:
             correction = KP * error + KD * derivative
             previous_error = error
 
+            # Memorisation du dernier cote de la ligne
+            if abs(error) > 2:
+                last_error_sign = 1 if error > 0 else -1
+
+            # Ligne retrouvee : reinitialisation de la recherche
+            lost_since = None
+
             left_speed = BASE_SPEED + correction
             right_speed = BASE_SPEED - correction
 
             # Limitation des commandes
-            left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
-            right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+            left_speed = int(max(
+                -MAX_SPEED, min(MAX_SPEED, left_speed)
+            ))
+            right_speed = int(max(
+                -MAX_SPEED, min(MAX_SPEED, right_speed)
+            ))
 
             # 7. Commande des moteurs physiques
             robot.SetMotors(left_speed, right_speed)
@@ -125,7 +142,22 @@ try:
             )
 
         else:
-            robot.Stop()
+
+            # Aucun barycentre detecte : perte de ligne
+            if lost_since is None:
+                lost_since = time.time()
+
+            if time.time() - lost_since < MAX_SEARCH_TIME:
+
+                # Rotation sur place vers le dernier cote connu
+                robot.SetMotors(
+                    -last_error_sign * SEARCH_SPEED,
+                    last_error_sign * SEARCH_SPEED
+                )
+
+            else:
+                # Arret si la ligne n'est pas retrouvee
+                robot.Stop()
 
         # 8. Affichage
         cv2.imshow("Camera", image)
