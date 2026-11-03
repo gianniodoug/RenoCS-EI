@@ -124,8 +124,8 @@ try:
 
             correction = KP * error + KI * integral + KD * derivative
 
-            left_speed = BASE_SPEED + correction
-            right_speed = BASE_SPEED - correction
+            left_speed = BASE_SPEED - correction
+            right_speed = BASE_SPEED + correction
 
             left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
             right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
