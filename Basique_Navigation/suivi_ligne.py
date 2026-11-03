@@ -1,4 +1,3 @@
-
 import numpy as np
 import cv2
 import time
@@ -14,7 +13,7 @@ from arduino import arduino
 camera = Picamera2()
 camera.configure(
     camera.create_preview_configuration(
-        main={"format": "RGB888", "size": (640, 480)}
+        main={"format": "RGB888", "size": (320, 240)}
     )
 )
 camera.start()
@@ -36,12 +35,20 @@ if not robot.connect():
 # PARAMETRES DU SUIVI
 # -------------------------
 
-BASE_SPEED = 100
-KP = 0.04
-KD = 0.015
-previous_error = 0
+BASE_SPEED = 100      # PWM (-255..255)
 MAX_SPEED = 255
 
+# The error is normalised: -1 = line at the left edge, +1 = right edge
+KP = 110.0    # PWM per unit of error (= 0.35 per pixel at 640 px)
+KI = 40.0     # PWM per (unit of error x second)
+KD = 5.0      # PWM per (unit of error / second)
+I_MAX = 60.0  # max PWM the integral term may add (anti-windup)
+
+SHOW_DEBUG = True     # set to False during real runs (faster loop)
+
+previous_error = 0.0
+integral = 0.0
+last_time = time.monotonic()
 
 # -------------------------
 # BOUCLE PRINCIPALE
@@ -97,43 +104,52 @@ try:
 
                 centers.append(cx_row)
 
-        # 6. Calcul de l'erreur et correction PD
+        # 6. Error and PID correction
+        now = time.monotonic()
+        dt = max(now - last_time, 1e-3)   # real time between frames
+        last_time = now
+
         if len(centers) > 0:
 
             cx = int(np.mean(centers))
 
-            error = cx - w / 2
-            derivative = error - previous_error
+            error = (cx - w / 2) / (w / 2)     # normalised error, -1..+1
 
-            correction = KP * error + KD * derivative
+            # Integral: builds up the extra turn needed in the loops of the 8
+            integral += error * dt
+            integral = max(-I_MAX / KI, min(I_MAX / KI, integral))  # anti-windup
+
+            derivative = (error - previous_error) / dt
             previous_error = error
+
+            correction = KP * error + KI * integral + KD * derivative
 
             left_speed = BASE_SPEED + correction
             right_speed = BASE_SPEED - correction
 
-            # Limitation des commandes
             left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
             right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
 
-            # 7. Commande des moteurs physiques
+            # 7. Command the motors
             robot.SetMotors(left_speed, right_speed)
 
-            cv2.circle(
-                binary,
-                (cx, binary.shape[0] // 2),
-                5, 128, -1
-            )
+            if SHOW_DEBUG:
+                print(f"err={error:+.2f} I={KI*integral:+.0f} "
+                      f"corr={correction:+.0f} L={left_speed:.0f} R={right_speed:.0f}")
+                cv2.circle(binary, (cx, binary.shape[0] // 2), 5, 128, -1)
 
         else:
             robot.Stop()
+            integral = 0.0          # forget the old curve
+            previous_error = 0.0
 
-        # 8. Affichage
-        cv2.imshow("Camera", image)
-        cv2.imshow("Detection ligne", binary)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
+        # 8. Display (slow over VNC: disable it for real runs)
+        if SHOW_DEBUG:
+            cv2.imshow("Camera", image)
+            cv2.imshow("Detection ligne", binary)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            
 except KeyboardInterrupt:
     pass
 
@@ -142,4 +158,3 @@ finally:
     robot.disconnect()
     camera.stop()
     cv2.destroyAllWindows()
-
