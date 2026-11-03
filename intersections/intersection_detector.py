@@ -1,8 +1,9 @@
-"""Image-only white-on-dark X detector. No Webots, metadata or actuator I/O.
+"""Image-only white-on-dark X/T detector. No Webots, metadata or actuator I/O.
 
 Four arms must persist at two distances from a Hough-line intersection.
 Thresholds are initial heuristics tuned on twelve static Webots camera frames.
 v1.1 adds a border ambiguity guard, tuned on the six original clipped-X cases.
+v1.2 preserves that X path and adds conservative, fully visible three-arm Ts.
 """
 from itertools import combinations
 
@@ -70,6 +71,55 @@ def _border_junction(candidate, shape):
                 and float(hits[inside].mean()) >= SETTINGS["border_visible_support_min"]):
             visible_arms += 1
     return bool(clipped and visible_arms >= 3)
+
+
+def _t_junction(candidate, mask, supported):
+    """Require three real branches AND observable absence of a fourth branch.
+
+    A clipped X cannot supply negative evidence outside the image: the entire
+    guard disk must be visible. Check connected support along each arm, three
+    separated stripes on several complete rings, and a dark missing-arm sector.
+    No direction is assumed to be vertical, horizontal, or the robot's front.
+    """
+    if candidate["strong_arms"] != 3 or candidate["ring_arms"] != 3:
+        return None
+    h, w = mask.shape
+    size = min(h, w)
+    center = candidate["center"]
+    guard = size * .24
+    if not (guard + 2 <= center[0] < w - guard - 2
+            and guard + 2 <= center[1] < h - guard - 2):
+        return None
+    directions = [(ray[1][-1] - center) / np.linalg.norm(ray[1][-1] - center)
+                  for ray in candidate["rays"]]
+    present = [i for i, arm in enumerate(candidate["arms"])
+               if arm >= SETTINGS["arm_support_min"]]
+    missing = next(i for i in range(4) if i not in present)
+    radii = np.linspace(size * .015, size * .22, 64)
+    supports = [_ray_support(supported, center, directions[i], radii)[0] for i in present]
+    if min(supports) < .85:
+        return None
+    # Search a sector, not just one thin axis which could miss a displaced arm.
+    direction = directions[missing]
+    phi = np.arctan2(direction[1], direction[0]) + np.deg2rad(np.linspace(-12, 12, 25))
+    rr = np.linspace(size * .045, guard, 64)
+    points = center + rr[:, None, None] * np.stack((np.cos(phi), np.sin(phi)), axis=1)[None]
+    pixels = np.rint(points).astype(int)
+    hits = mask[pixels[:, :, 1], pixels[:, :, 0]] != 0
+    if float(hits.mean()) > .03 or np.any(hits.mean(axis=1) > .20):
+        return None
+    angles = np.linspace(0, 2 * np.pi, 360, endpoint=False)
+    for radius in (.10, .16, .22):
+        ring = np.rint(center + size * radius * np.stack((np.cos(angles), np.sin(angles)), axis=1)).astype(int)
+        hits = np.uint8(mask[ring[:, 1], ring[:, 0]] != 0)
+        circular = np.tile(hits, 3)[None]
+        circular = cv2.morphologyEx(circular, cv2.MORPH_CLOSE, np.ones((1, 3), np.uint8))
+        circular = cv2.morphologyEx(circular, cv2.MORPH_OPEN, np.ones((1, 3), np.uint8))
+        hits = circular[0, 360:720]
+        branches = np.count_nonzero((hits != 0) & (np.roll(hits, 1) == 0))
+        if branches != 3 or float(hits.mean()) > .50:
+            return None
+    return float(min(supports))
 
 
 def _analyze(image):
@@ -192,6 +242,22 @@ def _analyze(image):
         state = "AHEAD_CANDIDATE" if center[1] < SETTINGS["ahead_boundary_v"] else "IN_VIEW_CANDIDATE"
         return _observation(True, True, "X", state, best["score"], center,
                             "two crossing axes; all four arms supported at near and far scales"), debug
+    # X evidence has priority and its validated decision path above is unchanged.
+    t_candidates = []
+    for candidate in candidates:
+        score = _t_junction(candidate, mask, supported)
+        if score is not None:
+            t_candidates.append((candidate, score))
+    if t_candidates:
+        best, score = t_candidates[0]
+        debug["candidate"] = best
+        if any(np.linalg.norm(c["center"] - best["center"]) > size * .12
+               for c, _ in t_candidates[1:]):
+            return _observation(reason="multiple separated T candidates; single center ambiguous"), debug
+        center = [float(best["center"][0] / (w - 1)), float(best["center"][1] / (h - 1))]
+        state = "AHEAD_CANDIDATE" if center[1] < SETTINGS["ahead_boundary_v"] else "IN_VIEW_CANDIDATE"
+        return _observation(True, True, "T", state, score, center,
+                            "three connected supported arms; fourth-arm sector visibly absent at multiple scales"), debug
     if best and best["strong_arms"] >= 3:
         return _observation(reason="incomplete or broad junction: separated four-arm X not established"), debug
     for candidate in candidates:

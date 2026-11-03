@@ -76,7 +76,7 @@ def _validate_observation(obs):
             raise ValueError("inconsistent NONE observation")
         return "NONE"
     center = obs["center_uv"]
-    if (obs["intersection_detected"] is not True or obs["kind"] != "X"
+    if (obs["intersection_detected"] is not True or obs["kind"] not in ("X", "T")
             or obs["state"] not in ("AHEAD_CANDIDATE", "IN_VIEW_CANDIDATE")
             or not isinstance(center, (list, tuple)) or len(center) != 2
             or not all(_finite(v) and 0 <= v <= 1 for v in center)):
@@ -194,7 +194,7 @@ class IntersectionTracker:
         event = dict(type="INTERSECTION_CONFIRMED", encounter_id=self._encounter_id,
                      run_id=self.run_id, t_ns=t_ns, seq=seq,
                      first_positive_t_ns=self._votes[0][0], positive_count=len(self._votes),
-                     kind="X", score=observation["score"],
+                     kind=observation["kind"], score=observation["score"],
                      center_uv=list(observation["center_uv"]))
         self._votes.clear()
         self.state, self._clear_count = "LATCHED", 0
