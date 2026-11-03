@@ -1,98 +1,97 @@
-# RenoCS quadrillage deployment
+# RenoCS physical quadrillage robot
 
-One shared 640x480 Picamera2 stream; one A22 serial owner. The robot follows the
-white line, confirms X/T, sends Stop and latches. No navigation or restart API.
-Real mode also latches line loss and critical faults. UNKNOWN pauses movement;
-persistent UNKNOWN escalates through the existing T.9 policy. No other robot
-controller may run simultaneously. No original controller or firmware is needed
-at runtime: bluno_backend.py implements the team-confirmed professor A22 wire API.
+## Normal use: no terminal
 
-## Raspberry Pi prerequisites
+1. Copy this WHOLE folder to the Raspberry Pi Desktop. Open it and double-click
+   **START_ROBOT.desktop**. You may also copy that launcher file onto the Desktop
+   beside this folder; it locates the folder automatically.
+2. If Raspberry Pi OS asks, choose **Execute / Allow Launching**. If it opens as
+   text, use File Manager > Properties > Permissions > allow execution first.
+   Git records the launcher as executable; ZIP/Windows copies can lose that bit.
+3. The small window opens with START and STOP. START asks you to confirm that
+   the independent MOTOR-POWER cutoff has been tested and an operator is ready
+   at it. No camera or serial connection opens before confirmation.
+4. The existing controller checks the camera and processing speed at rest, then
+   uses real A22 `/dev/ttyACM0`, base PWM **45**, absolute PWM cap **60**. The run
+   has an independent **30-second limit**, including startup, plus the normal
+   controller limit. These are PWM limits, not calibrated physical speed.
+5. A confirmed X/T, lost line or critical fault sends zero targets and latches.
+   STOP also latches; it works while image processing is busy. There is no
+   navigation, automatic restart or resume. Close and reopen deliberately only
+   after checking physical rest. Closing the active window requests Stop first.
 
-Use the same system Python/camera environment that runs huit.py. If missing:
+**Use the physical motor-power cutoff immediately if movement is unexpected or
+stopping is uncertain. A serial reply never proves that the robot has stopped.**
+The window always asks you to verify physical rest; it never claims to measure it.
+Do not rely on an unverified firmware watchdog, USB removal or killing Python.
 
-```sh
-sudo apt install python3-picamera2 python3-opencv python3-numpy python3-serial
-```
+## One-time Raspberry Pi setup
 
-Python >=3.9 on Raspberry Pi OS/Linux with CLOCK_BOOTTIME. Picamera2 must expose
-capture_arrays(["main"]) and metadata SensorTimestamp. RGB888 arrays are BGR.
-Preview configuration and two-second warm-up match huit.py; capture_arrays is
-capture_array's synchronous same-request image+metadata equivalent:
-https://github.com/raspberrypi/picamera2/blob/main/picamera2/picamera2.py
+The launcher explicitly uses **/usr/bin/python3**, the Raspberry Pi OS system
+interpreter, not an IDE/desktop PATH or a Windows virtual environment. It uses
+its installed packages. Through the graphical Add/Remove Software application,
+ensure these Raspberry Pi OS packages exist if the launcher reports them missing:
+`python3-tk`, `python3-picamera2`, `python3-opencv`, `python3-numpy`, `python3-serial`
+(Picamera2 supplies/requires libcamera). Python 3.9+ is required. The normal user
+must have serial-device permission (typically dialout); log out/in if changed.
+Stop huit.py, Arduino IDE serial monitors and all other robot/camera programs.
+Only one RenoCS window per user may run at a time. No firmware change is needed.
 
-Stop huit.py, IDE serial monitors and other camera/serial users. Identify the
-correct Bluno device (default /dev/ttyACM0); obtain normal user serial access
-(e.g. dialout group), and log in again if membership changed. Do not blindly use
-sudo or change device permissions to mask a wrong device or competing owner.
+Keep `START_ROBOT.desktop`, `launch_robot.py`, `physical_robot/` and
+`intersections/` together; paths are resolved from the launcher, including spaces.
+The existing `run_quadrillage.py` command entry remains available for developers.
+The self-contained modules need no files elsewhere in the team repository.
 
-## Motor power OFF: camera dry-run
+## What changed for the Pi processing failure
 
-From this folder, with motor power disconnected:
+`PROCESSING_DEADLINE_MISSED` means a frame passed the input timestamp check but
+its age exceeded **250 ms after intersection processing**. SensorTimestamp and
+now() remain CLOCK_BOOTTIME; capture time is never replaced with receipt time.
+The live 250 ms checks and tracker thresholds have NOT been relaxed.
 
-```sh
-python3 -u run_quadrillage.py --dry-run --live-camera --frames 300 --preview
-```
+Compared with the lightweight huit.py loop, the old integrated path also ran
+connected components, Hough candidates and four-arm/three-arm geometric checks.
+It did this cold after opening the motor port. The correction keeps the same
+640x480 preview/RGB888 BGR stream and two-second camera warm-up, but:
 
-Omit --preview for a headless terminal. Check upright view, line in lower ROI,
-correct X/T, fresh timestamps, processing latency, and absence of camera faults.
-Move the unpowered robot by hand toward actual X/T: confirm exactly one event
-and a latched stop request. This is not physical motor stopping validation.
+- removes redundant resizing and per-component full-frame mask scans;
+- batches duplicate-axis and four-ray calculations, caches ring geometry, and
+  replaces tiny repeated matrix solves with the same intersection formula;
+- skips unused ring calculations for candidates with fewer than three supported
+  rays (debug visualizations still calculate full evidence);
+- uses one OpenCV/BLAS thread to avoid oversubscription;
+- warms up inference on five real camera frames BEFORE opening serial; the last
+  three must each complete within 200 ms of capture, leaving 50 ms of margin.
+  Slow warm processing is shown as an error with motors still disabled.
 
-## REAL motors: supervised low-PWM first test
+This identifies the software failure condition and removes measured host-side
+bottlenecks. The exact cold/warm timing on the Pi 3 B+ has NOT been measured here.
+If the warm timing gate fails, do not bypass it: inspect the recorded timings.
+The line-following scan algorithm, PD gains, X/T thresholds, temporal tracker,
+A22 byte protocol and latched-stop policy are preserved. There is no silent
+image downsampling or deadline increase. All consumers use the same camera frame.
 
-The operator must FIRST test an immediate independent MOTOR-POWER cutoff and
-keep a hand on it throughout the test. The flag below is an operator attestation,
-not an electronic interlock and not a claim that a watchdog is installed.
+## STOP, logs and remaining physical verification
 
-```sh
-python3 -u run_quadrillage.py --enable-motors --confirm-power-cutoff --port /dev/ttyACM0 --base-pwm 45 --pwm-limit 60 --max-seconds 30
-```
+The UI never owns serial. STOP sets a shared event observed by the existing
+serial owner every 20 ms, independently of inference. It attempts the existing
+zero-motor command with a 100 ms transaction budget (after any current bounded
+transaction) and permanently rejects later movement. An independent 30 s timer
+sets the same event. UI callbacks never wait on camera, serial, inference or join.
+OS/USB faults still prevent a hard real-time guarantee or physical stop guarantee.
+If the command cannot be confirmed or the controller is busy, the window says to
+use the motor-power cutoff. No failed link is blindly retried or auto-reconnected.
 
-Camera warms up and produces frames before the serial connection is opened.
-A22 handshake and initial zero targets must ACK before movement. Signed PWM cap
-is 60/255, base 45/255; these are deliberately limited test values, NOT measured
-speed or proof of sufficient motor torque. KP=.04, KD=.015 and line geometry are
-unchanged. Limit applies after the unchanged PD calculation; no PWM above 60.
-If torque is insufficient or steering is wrong, cut power and review settings;
-do not increase limits while the robot is running. Real-test CLI rejects caps
-above 80. No encoder-based stopping verification is implemented.
+Detailed startup, camera clock/configuration, cold/warm processing age, per-frame
+results, serial failures and shutdown information go to `logs/robot-*.log`, not
+hundreds of terminal messages. Logs/caches are ignored and are not shipped.
+The short window error remains specific (camera, processing, line loss or serial).
 
-First verify wheel directions and zero targets with wheels clear of the ground.
-Then use a clear, level section with ample approach distance, a spotter and one
-intersection. Confirm actual wheel/body rest BEFORE the crossing, measure the
-margin, and keep observing after the crossing disappears from view. Repeat X/T
-separately only after a deliberate stationary restart. Cover/remove the line to
-verify a latched Stop. Never test USB loss or Pi freeze while freely moving.
-If an ACK fails, UNKNOWN persists, camera stops, motion is unexpected, or the
-robot does not stop promptly: use the MOTOR-POWER cutoff immediately.
-
-Ctrl+C, SIGTERM, q (with --preview), the 30 s limit and errors request bounded
-Stop and cleanup. They are not replacements for motor-power removal. No software
-can deliver Stop over a lost USB link, and killing the process is not a reliable
-physical emergency stop. No automatic reconnect/rearm/recovery is performed.
-
-## Timing and validation limits
-
-Camera startup deadline 12 s (includes 2 s warm-up), per-read wait 250 ms,
-frame/processing freshness limit 250 ms, bounded camera cleanup 500 ms. Camera
-calls have one daemon owner; a blocked native driver is reported without holding
-up the main Stop path. Serial connect budget 4 s (includes 2 s Bluno boot wait),
-transaction budget 100 ms, failed-worker cleanup at most two 50 ms joins. OS
-scheduling is not hard real-time. Failed serial sessions are poisoned: no blind
-retries or automatic reconnect. Normal intersection stops remain distinct from
-fault stops; neither can be overridden by the follower.
-
-The original watchdog is nonfunctional; a separate 350 ms firmware candidate is
-not confirmed flashed. Both firmware variants share the same connection banner.
-Do not rely on that watchdog. If commissioning it later, verify actual timeout
-and physical rest, and measure full Pi control-loop latency with margin (health
-probes do not refresh the candidate motor watchdog).
-
-Software-only tests cover fake camera startup/stall/shutdown, A22 wire format,
-timeouts, owner exclusivity, low-PWM proposals, X/T stop latching, line loss and
-fault priority. This package has NOT been run against physical hardware here.
-The camera-timeout correction, real-camera detection distances, motor torque,
-stop distance and power-cutoff effectiveness require supervised Pi verification.
-A Stop ACK proves a protocol reply, never physical rest. Do not attempt a floor
-run until the camera dry-run and independent power-cutoff checks pass.
+Software tests use fake camera/serial devices, including the actual serial-worker
+process/Pipe, a blocked inference test, UI buttons/confirmation and an independent
+run-limit test. Existing X/T, tracker, adapter, T.9 and physical-controller tests
+and the recorded 900-frame replay are regressions, not physical validation.
+On the actual Pi, verify startup timing, camera mounting/orientation, real-grid
+X/T observations, wheel directions/torque at low PWM and actual stopping margin
+BEFORE the intersection. First test with wheels raised, then one clear approach
+with a spotter at the tested power cutoff. Acknowledge only what was observed.

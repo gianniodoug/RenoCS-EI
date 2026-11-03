@@ -63,6 +63,7 @@ class PhysicalIntersectionAdapter:
         self._latest = dict(observation=None, tracker=None, stop_requested=False,
                             stop_action=False, stop_reason=None, stop_t_ns=None)
         self.processing_ms = None
+        self.input_age_ms = None
 
     def _fault(self, reason):
         if self.safety_reason is None:
@@ -92,11 +93,13 @@ class PhysicalIntersectionAdapter:
                     motion_verified=False, ready_to_resume=False,
                     frame_accepted=bool(tracker is not None and tracker['accepted'] and not self.safety_reason),
                     clock_id=self.clock_id, epoch_ns=self.epoch_ns,
-                    captured_ns=self.last_capture_ns, processing_ms=self.processing_ms)
+                    captured_ns=self.last_capture_ns, processing_ms=self.processing_ms,
+                    input_age_ms=self.input_age_ms)
 
     def process_frame(self, image, *, pixel_format, captured_ns, seq, clock_id):
         self._pending_action = False
         now = self._now()
+        self.input_age_ms = (now-captured_ns)/1e6 if type(captured_ns) is int else None
         if self.safety_reason:
             return self.snapshot()
         if clock_id != self.clock_id:

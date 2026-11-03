@@ -10,6 +10,7 @@ Border-scale correction: when the full-size T profile abstains, fit a complete
 evidence ellipse inside the image while retaining the original arm prefilter.
 """
 from itertools import combinations
+import math
 
 import cv2
 import numpy as np
@@ -154,12 +155,12 @@ def _t_junction(candidate, mask, supported, allow_wide=False, fit_visible=False)
     return float(min(supports))
 
 
-def _analyze(image):
+def _analyze(image, debug_candidates=True):
     _validate(image)
     height, width = image.shape[:2]
     scale = min(1.0, SETTINGS["analysis_max_width"] / width)
-    frame = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))),
-                       interpolation=cv2.INTER_AREA)
+    frame = image if scale == 1.0 else cv2.resize(
+        image, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
     h, w = frame.shape[:2]
     debug = {"frame": frame, "mask": np.zeros((h, w), np.uint8),
              "lines": [], "candidate": None, "white_fraction": 0.0}
@@ -171,11 +172,11 @@ def _analyze(image):
                        (179, SETTINGS["white_saturation_max"], 255))
     # Remove isolated pixels without filling the gaps between unrelated stripes.
     count, components, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
-    cleaned = np.zeros_like(mask)
-    for i in range(1, count):
-        if stats[i, cv2.CC_STAT_AREA] >= max(8, h * w * 0.00005):
-            cleaned[components == i] = 255
-    mask = cleaned
+    # Same area predicate, one label lookup instead of a full image scan for
+    # EACH retained component (costly on a noisy physical Pi camera image).
+    keep = np.uint8(stats[:, cv2.CC_STAT_AREA] >= max(8, h * w * 0.00005)) * 255
+    keep[0] = 0
+    mask = keep[components]
     fraction = float(np.count_nonzero(mask) / mask.size)
     debug.update(mask=mask, white_fraction=fraction)
     if fraction < 0.0008:
@@ -191,21 +192,22 @@ def _analyze(image):
     lines.sort(key=lambda p: (p[2] - p[0]) ** 2 + (p[3] - p[1]) ** 2, reverse=True)
     # Collapse duplicate stripe edges/segments before considering line pairs.
     unique = []
+    unique_starts, unique_axes = [], []
+    duplicate_cos = np.cos(np.deg2rad(3))
     for line in lines:
         start, end = np.array(line[:2], float), np.array(line[2:], float)
         direction = (end - start) / np.linalg.norm(end - start)
         duplicate = False
-        for previous in unique:
-            p = np.array(previous[:2], float)
-            axis = np.array(previous[2:], float) - p
-            axis /= np.linalg.norm(axis)
-            delta = (start + end) / 2 - p
-            if (abs(direction @ axis) > np.cos(np.deg2rad(3))
-                    and abs(delta[0] * axis[1] - delta[1] * axis[0]) < size * 0.02):
-                duplicate = True
-                break
+        if unique:
+            # Same direction/offset predicates, batched across previous axes.
+            axes = np.asarray(unique_axes)
+            delta = (start+end)/2-np.asarray(unique_starts)
+            duplicate = bool(np.any((np.abs(axes @ direction) > duplicate_cos)
+                & (np.abs(delta[:,0]*axes[:,1]-delta[:,1]*axes[:,0]) < size*.02)))
         if not duplicate:
             unique.append(line)
+            unique_starts.append(start)
+            unique_axes.append(direction)
         if len(unique) == 60:
             break
     lines = unique
@@ -214,33 +216,52 @@ def _analyze(image):
     supported = cv2.dilate(mask, cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (2 * tolerance + 1, 2 * tolerance + 1)))
     radii = np.linspace(size * 0.045, size * 0.16, 36)
+    geometry = []
+    for segment in lines:
+        start = np.array(segment[:2], float)
+        direction = np.array(segment[2:], float)-start
+        geometry.append((start, direction/np.linalg.norm(direction)))
+    angles = np.linspace(0, 2 * np.pi, 180, endpoint=False)
+    ring_offsets = size * 0.14 * np.column_stack((np.cos(angles), np.sin(angles)))
+    ring_kernel = np.ones((1, 3), np.uint8)
     candidates = []
-    for first, second in combinations(lines, 2):
-        a, b = np.array(first[:2], float), np.array(second[:2], float)
-        d = np.array(first[2:], float) - a
-        e = np.array(second[2:], float) - b
-        d /= np.linalg.norm(d)
-        e /= np.linalg.norm(e)
-        angle = float(np.degrees(np.arccos(np.clip(abs(d @ e), 0, 1))))
+    for (a, d), (b, e) in combinations(geometry, 2):
+        angle = math.degrees(math.acos(min(1., abs(float(d @ e)))))
         if angle < SETTINGS["minimum_axis_angle_deg"]:
             continue
-        t, _ = np.linalg.solve(np.column_stack((d, -e)), b - a)
+        # Exact 2x2 intersection formula; avoids many tiny BLAS solves and
+        # thread-pool startup. The angle guard above excludes parallel axes.
+        delta = b-a
+        t = (delta[0]*e[1]-delta[1]*e[0])/(d[0]*e[1]-d[1]*e[0])
         center = a + t * d
         x, y = center
         if not (0 <= x < w - 1 and 0 <= y < h - 1):
             continue
         if not supported[int(round(y)), int(round(x))]:
             continue
-        rays = [_ray_support(supported, center, direction, radii)
-                for direction in (d, -d, e, -e)]
-        arms = [ray[0] for ray in rays]
+        # Identical near/far samples, four rays at once. No image downsampling
+        # or arm-threshold changes are required for the Pi 3 fast path.
+        directions = np.stack((d,-d,e,-e))
+        points = center + radii[None,:,None]*directions[:,None,:]
+        pixels = np.rint(points).astype(int)
+        inside = ((pixels[:,:,0] >= 0) & (pixels[:,:,0] < w)
+                  & (pixels[:,:,1] >= 0) & (pixels[:,:,1] < h))
+        hits = np.zeros((4,len(radii)),bool)
+        hits[inside] = supported[pixels[:,:,1][inside],pixels[:,:,0][inside]] != 0
+        middle = len(radii)//2
+        arms = np.minimum(hits[:,:middle].mean(axis=1),hits[:,middle:].mean(axis=1)).tolist()
+        rays = list(zip(arms,points,hits))
         # Both scales must support every arm; a V or a T cannot be a full X.
         strong = sum(s >= SETTINGS["arm_support_min"] for s in arms)
         score = float(min(arms))
+        if strong < 3 and not debug_candidates:
+            # Rings cannot make fewer than 3 supported rays positive. Border
+            # abstention uses the actual rays, not these unused ring metrics.
+            candidates.append(dict(center=center,arms=arms,rays=rays,angle_deg=angle,
+                strong_arms=strong,score=score,ring_white_fraction=0.,ring_arms=0))
+            continue
         # A broad bright patch can support every ray without being four stripes.
-        angles = np.linspace(0, 2 * np.pi, 180, endpoint=False)
-        ring = np.rint(center + size * 0.14 * np.column_stack(
-            (np.cos(angles), np.sin(angles)))).astype(int)
+        ring = np.rint(center + ring_offsets).astype(int)
         inside = ((ring[:, 0] >= 0) & (ring[:, 0] < w)
                   & (ring[:, 1] >= 0) & (ring[:, 1] < h))
         ring_hits = np.zeros(len(ring), np.uint8)
@@ -249,8 +270,8 @@ def _analyze(image):
         # Count separated angular white regions. Four rays inside one thick
         # stripe are still only two actual arms. Circular closing fills 1-bin gaps.
         circular = np.tile(ring_hits, 3)[None, :]
-        circular = cv2.morphologyEx(circular, cv2.MORPH_CLOSE, np.ones((1, 3), np.uint8))
-        circular = cv2.morphologyEx(circular, cv2.MORPH_OPEN, np.ones((1, 3), np.uint8))
+        circular = cv2.morphologyEx(circular, cv2.MORPH_CLOSE, ring_kernel)
+        circular = cv2.morphologyEx(circular, cv2.MORPH_OPEN, ring_kernel)
         ring_hits = circular[0, len(ring):2 * len(ring)]
         ring_arms = int(np.count_nonzero((ring_hits != 0) & (np.roll(ring_hits, 1) == 0)))
         candidates.append(dict(center=center, arms=arms, rays=rays, angle_deg=angle,
@@ -338,7 +359,7 @@ def detect_intersection(image):
     frames yield repeated candidates; T.5 must latch/validate navigation events.
     Input pixels are not modified. No pose, filename or label is consumed.
     """
-    return _analyze(image)[0]
+    return _analyze(image, debug_candidates=False)[0]
 
 
 def debug_intersection(image):

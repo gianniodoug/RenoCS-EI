@@ -72,6 +72,7 @@ class Picamera2Frames:
         self._closed = False
         self.camera = self.configuration = None
         self.started = False
+        self.cancel_event = None
 
     def _acquire(self):
         import queue
@@ -144,9 +145,14 @@ class Picamera2Frames:
             raise RuntimeError('one camera session only; no automatic restart')
         self._thread = threading.Thread(target=self._acquire, name='RenoCS-camera', daemon=True)
         self._thread.start()
-        if not self._ready.wait(self.startup_timeout_s):
-            self._stop.set()
-            raise TimeoutError('CAMERA_STARTUP_TIMEOUT: no post-warm-up frame')
+        deadline = time.monotonic()+self.startup_timeout_s
+        while not self._ready.wait(min(.05, max(0.,deadline-time.monotonic()))):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                self._stop.set()
+                raise InterruptedError('OPERATOR_STOP during camera startup')
+            if time.monotonic() >= deadline:
+                self._stop.set()
+                raise TimeoutError('CAMERA_STARTUP_TIMEOUT: no post-warm-up frame')
         if self._error is not None:
             raise OSError('CAMERA_STARTUP_FAILURE: '+str(self._error)) from self._error
         self.started = True

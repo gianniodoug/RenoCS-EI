@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=START RenoCS Robot
+Comment=Supervised real quadrillage robot - START and STOP
+Icon=applications-engineering
+Terminal=false
+StartupNotify=true
+TryExec=/usr/bin/python3
+Exec=/usr/bin/python3 -c "import os,sys; from pathlib import Path; from urllib.parse import urlparse; from urllib.request import url2pathname; p=sys.argv[1]; p=url2pathname(urlparse(p).path) if p.startswith('file:') else p; s=Path(p).resolve().with_name('launch_robot.py'); s=s if s.is_file() else s.parent/'ST5-RenoCS-quadrillage'/'launch_robot.py'; os.execv('/usr/bin/python3',['/usr/bin/python3',str(s)])" %k
+Categories=Education;

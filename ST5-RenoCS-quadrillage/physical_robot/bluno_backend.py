@@ -122,7 +122,8 @@ def _error_state(error):
             else "PROTOCOL_ERROR" if isinstance(error, StopProtocolError) else "LOST")
 
 
-def _serial_worker(channel, config, serial_factory=None, now_ns=time.monotonic_ns, sleep=time.sleep):
+def _serial_worker(channel, config, serial_factory=None, now_ns=time.monotonic_ns, sleep=time.sleep,
+                   *, stop_event=None, stop_status=None):
     """Only this process owns serial. Test injection never constructs pySerial."""
     if multiprocessing.current_process().name != "MainProcess":
         # Terminal Ctrl+C must unwind the controller, which sends Stop; do not
@@ -130,12 +131,37 @@ def _serial_worker(channel, config, serial_factory=None, now_ns=time.monotonic_n
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     port = None
     connected = False
+    operator_latched = False
+    def operator_stop():
+        nonlocal operator_latched
+        if connected and not operator_latched:
+            if stop_status is not None:
+                stop_status.value = 1
+            try:
+                wire = _Wire(port, now_ns()+round(config.transaction_timeout_s*1e9), now_ns)
+                wire.exchange(b"C"+bytes(8), b"OK Moteurs mis aux consignes : 0 0 0 0")
+                operator_latched = True
+                if stop_status is not None:
+                    stop_status.value = 2  # Protocol reply ONLY, never physical rest.
+            except Exception:
+                if stop_status is not None:
+                    stop_status.value = 3
+                raise
     try:
         while True:
+            if stop_event is not None:
+                if stop_event.is_set():
+                    if not connected:
+                        return  # Cancel before opening/arming a motor session.
+                    operator_stop()
+                if not channel.poll(.02):
+                    continue
             request = channel.recv()
             seq, operation, deadline, targets = request
             try:
                 if operation == "connect":
+                    if stop_event is not None and stop_event.is_set():
+                        raise InterruptedError("OPERATOR_STOP before connect")
                     if port is not None:
                         raise StopProtocolError("duplicate connection")
                     if now_ns() >= deadline:
@@ -149,6 +175,8 @@ def _serial_worker(channel, config, serial_factory=None, now_ns=time.monotonic_n
                     wire = _Wire(port, deadline, now_ns)
                     ready = now_ns()+round(config.boot_wait_s*1e9)
                     while now_ns() < ready:
+                        if stop_event is not None and stop_event.is_set():
+                            raise InterruptedError("OPERATOR_STOP during boot; no movement authorized")
                         sleep(max(0., min(.01, wire.remaining(), (ready-now_ns())/1e9)))
                     wire.remaining()
                     port.reset_input_buffer()  # Startup only, never after a failed binary command.
@@ -164,6 +192,10 @@ def _serial_worker(channel, config, serial_factory=None, now_ns=time.monotonic_n
                     if operation == "probe":
                         wire.exchange(b"B", b"OK")
                     elif operation in ("Stop", "SetMotors"):
+                        if stop_event is not None and stop_event.is_set():
+                            operator_stop()
+                        if operation == "SetMotors" and operator_latched:
+                            raise InterruptedError("OPERATOR_STOP_LATCHED; nonzero commands forbidden")
                         if (not isinstance(targets, tuple) or len(targets) != 4
                                 or any(type(x) is not int or abs(x) > config.pwm_limit for x in targets)
                                 or (operation == "Stop" and any(targets))):
@@ -174,6 +206,9 @@ def _serial_worker(channel, config, serial_factory=None, now_ns=time.monotonic_n
                         raise StopProtocolError("unknown motor operation")
                 channel.send((seq, True, "OK", ""))
             except Exception as error:
+                if (stop_status is not None and stop_event is not None and stop_event.is_set()
+                        and not isinstance(error, InterruptedError)):
+                    stop_status.value = 3
                 channel.send((seq, False, _error_state(error), str(error)[:128]))
                 break  # Never send another command on an uncertain/torn packet.
     except (EOFError, BrokenPipeError, OSError):
@@ -189,13 +224,15 @@ class A22MotorBackend:
     _ports_lock = threading.Lock()
 
     def __init__(self, *, clock_id, now_ns, config=None, authorization=None,
-                 allow_hardware=False, _context=None, _deadline_ns=time.monotonic_ns):
+                 allow_hardware=False, _context=None, _deadline_ns=time.monotonic_ns,
+                 stop_event=None, stop_status=None):
         self.config = config or BlunoConfig()
         if not isinstance(clock_id, str) or not clock_id or not callable(now_ns):
             raise ValueError("declare the camera's clock domain and callable")
         self.clock_id, self.now_ns = clock_id, now_ns
         self.authorization, self.allow_hardware = authorization, allow_hardware
         self._context, self._deadline_ns = _context, _deadline_ns
+        self.stop_event, self.stop_status = stop_event, stop_status
         self.status = SerialStatus(clock_id, now_ns(), "UNVERIFIED")
         self.last_acknowledged_targets = None
         self.stop_acknowledged = False
@@ -255,6 +292,8 @@ class A22MotorBackend:
 
     def SetMotors(self, left, right, *, owner):
         self._check_owner(owner)
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise InterruptedError("OPERATOR_STOP_LATCHED")
         if any(isinstance(x, bool) or not isinstance(x, Real) or not math.isfinite(x) for x in (left, right)):
             raise ValueError("finite signed PWM required")
         left, right = int(left), int(right)
@@ -285,7 +324,8 @@ class A22MotorBackend:
                     self._claimed = True
                 context = self._context or multiprocessing.get_context("spawn")
                 self._channel, child = context.Pipe()
-                self._process = context.Process(target=_serial_worker, args=(child, self.config), daemon=True)
+                options = {} if self.stop_event is None else dict(stop_event=self.stop_event, stop_status=self.stop_status)
+                self._process = context.Process(target=_serial_worker, args=(child, self.config), kwargs=options, daemon=True)
                 try:
                     self._process.start()
                 finally:

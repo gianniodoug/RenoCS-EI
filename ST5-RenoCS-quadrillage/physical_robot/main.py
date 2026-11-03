@@ -30,6 +30,7 @@ import argparse
 from concurrent.futures import TimeoutError as CameraTimeoutError
 from copy import deepcopy
 import json
+import logging
 import math
 import signal
 import threading
@@ -40,6 +41,7 @@ import numpy as np
 
 from intersections.fault_manager import FaultManager, SerialStatus
 from intersections.physical_adapter import PhysicalIntersectionAdapter
+from intersections.intersection_detector import detect_intersection
 from .bluno_backend import A22MotorBackend, BlunoConfig, HardwareAuthorization
 from .line_following import LineFollower
 
@@ -98,7 +100,8 @@ class MockBluno:
 
 class Controller:
     def __init__(self, source, *, motors=None, enable_real_motors=False,
-                 base_pwm=100, pwm_limit=255, latch_line_loss=None):
+                 base_pwm=100, pwm_limit=255, latch_line_loss=None,
+                 stop_event=None, processing_preflight=False):
         self.source = source
         self.clock_id, self.now_ns = source.clock_id, source.now_ns
         self.motors = motors if motors is not None else MockBluno(clock_id=self.clock_id, now_ns=self.now_ns)
@@ -119,6 +122,11 @@ class Controller:
         self.follower = LineFollower(base_speed=base_pwm, max_speed=pwm_limit)
         self.latch_line_loss = not self.dry_run if latch_line_loss is None else latch_line_loss
         self.last_image = None
+        self.stop_event = stop_event if stop_event is not None else threading.Event()
+        if hasattr(source, "cancel_event"):
+            source.cancel_event = self.stop_event
+        self.processing_preflight = processing_preflight
+        self.preflight_timings = []
         self.seq = 0
         self._started = self._closed = False
         self._last_stop = None
@@ -128,18 +136,58 @@ class Controller:
     def start(self):
         if self._closed or self._started:
             raise RuntimeError("controller cannot be restarted")
+        if self.stop_event.is_set():
+            raise InterruptedError("OPERATOR_STOP before startup")
         if not self.dry_run:
             # Establish a working, warmed-up camera before opening the motor port.
             self.source.start()
+            if self.stop_event.is_set():
+                raise InterruptedError("OPERATOR_STOP before motor connection")
+            if self.processing_preflight:
+                self._preflight()
+            if self.stop_event.is_set():
+                raise InterruptedError("OPERATOR_STOP before motor connection")
             self.motors.connect(owner=self._owner)
         self.motors.Stop(owner=self._owner)  # Initial zero before camera processing.
         if self.dry_run:
             self.source.start()
         self._started = True
 
+    def _preflight(self):
+        # Cold initialization is done at rest, before a serial port is opened.
+        # Do not reset the live adapter's safety latch or relax its 250 ms limit.
+        cv2.setNumThreads(1)
+        logger = logging.getLogger('renocs')
+        logger.info('CAMERA configuration=%s clock=%s; pixels=BGR; live deadline=%d ns',
+                    getattr(self.source, 'configuration', None), self.clock_id, self.adapter.max_age_ns)
+        for index in range(5):
+            if self.stop_event.is_set():
+                raise InterruptedError("OPERATOR_STOP during camera timing check")
+            image, captured_ns, _ = self.source.read(timeout=.25)
+            if type(captured_ns) is not int or not 0 <= self.now_ns()-captured_ns <= self.adapter.max_age_ns:
+                raise RuntimeError("Camera timestamps are stale or invalid; motors remain disabled")
+            began = time.perf_counter_ns()
+            detect_intersection(image)
+            self.follower.update(image)
+            elapsed = (time.perf_counter_ns()-began)/1e6
+            age = (self.now_ns()-captured_ns)/1e6
+            self.preflight_timings.append(dict(index=index, processing_ms=elapsed, frame_age_ms=age))
+            logger.info('PREFLIGHT frame=%d processing_ms=%.2f capture_to_completion_ms=%.2f cold_warmup=%s',
+                        index, elapsed, age, index < 2)
+        # Reserve 50 ms for policy + normal serial round trips; live freshness
+        # is still checked before AND after actuation, including slow ACKs.
+        if max(t['frame_age_ms'] for t in self.preflight_timings[-3:]) > 200:
+            raise RuntimeError("Processing too slow after warm-up (over 200 ms); motors remain disabled")
+        self.follower.previous_error = 0  # Preserve startup PD history.
+
+    def request_stop(self):
+        """Signal only: the one serial owner handles bounded, latched Stop."""
+        self.stop_event.set()
+
     def _health(self, result, motor_feedback):
         return self.faults.update(result, serial_status=self.motors.status,
-                    motor_feedback=motor_feedback, now_ns=self.now_ns(), clock_id=self.clock_id)
+                    motor_feedback=motor_feedback, now_ns=self.now_ns(), clock_id=self.clock_id,
+                    navigation_stop=self.stop_event.is_set())
 
     def _stop(self, priority, reason):
         key = (priority, reason)
@@ -188,14 +236,15 @@ class Controller:
             # Stop real hardware BEFORE probing/logging a known stop request.
             # Keep the subsequent health check: its failure outranks navigation.
             early_stop_ack = False
-            if not self.dry_run and result["stop_requested"]:
+            if not self.dry_run and (result["stop_requested"] or self.stop_event.is_set()):
                 try:
-                    early_stop_ack = self._stop("SAFETY" if result["stop_class"] == "SAFETY"
-                                               else "INTERSECTION", result["stop_reason"])
+                    early_stop_ack = self._stop("OPERATOR" if self.stop_event.is_set() else
+                                               "SAFETY" if result["stop_class"] == "SAFETY" else "INTERSECTION",
+                                               "OPERATOR_STOP" if self.stop_event.is_set() else result["stop_reason"])
                 except OSError as failure:
                     error = str(failure)
             # Do not delay a known camera fault to perform a health probe.
-            if result["stop_class"] != "SAFETY":
+            if result["stop_class"] != "SAFETY" and not self.stop_event.is_set():
                 try:
                     self.motors.probe(owner=self._owner)
                 except OSError as failure:
@@ -203,6 +252,8 @@ class Controller:
             decision = self._health(result, motor_feedback)  # Freshness AFTER all processing.
             if decision["state"] == "SAFE_STOP":
                 priority, reason = "SAFETY", decision["stop_reason"]
+            elif self.stop_event.is_set():
+                priority, reason = "OPERATOR", "OPERATOR_STOP"
             elif result["stop_requested"]:
                 priority, reason = "INTERSECTION", result["stop_reason"]
             elif not decision["motion_allowed"]:
@@ -216,6 +267,8 @@ class Controller:
             attempted_movement = False
             try:
                 if priority == "LINE_FOLLOWING":
+                    if self.stop_event.is_set():
+                        raise InterruptedError("OPERATOR_STOP before movement")
                     attempted_movement = True
                     self.motors.SetMotors(line["left_pwm"], line["right_pwm"], owner=self._owner)
                     self._last_stop = None
@@ -223,8 +276,9 @@ class Controller:
                     # A transaction must not leave an over-age camera decision
                     # authorizing movement after it returns.
                     decision = self._health(result, motor_feedback)
-                    if decision["state"] == "SAFE_STOP":
-                        priority, reason = "SAFETY", decision["stop_reason"]
+                    if decision["state"] == "SAFE_STOP" or self.stop_event.is_set():
+                        priority, reason = (("SAFETY", decision["stop_reason"])
+                                            if decision["state"] == "SAFE_STOP" else ("OPERATOR", "OPERATOR_STOP"))
                         stop_acknowledged = self._stop(priority, reason)
                         actuation = "Stop"
                 else:
@@ -236,11 +290,13 @@ class Controller:
                 if isinstance(failure, ValueError):
                     result = self.adapter.camera_failed("MOTOR_COMMAND_INVALID")
                 decision = self._health(result, motor_feedback)
-                priority, reason = "SAFETY", decision["stop_reason"]
+                priority, reason = (("OPERATOR", "OPERATOR_STOP")
+                                    if self.stop_event.is_set() and decision["state"] != "SAFE_STOP"
+                                    else ("SAFETY", decision["stop_reason"]))
                 actuation = "STOP_UNCONFIRMED"
                 # A failed movement transaction still needs a best-effort stop.
                 # A failed Stop is not retried blindly within the same cycle.
-                if attempted_movement:
+                if attempted_movement or isinstance(failure, InterruptedError):
                     try:
                         self._stop(priority, reason)
                         stop_acknowledged = True
@@ -262,6 +318,7 @@ class Controller:
                         event_camera_t_ns=(result["epoch_ns"]+result["confirmed_event"]["t_ns"]
                                            if result["confirmed_event"] else None),
                         detector_pipeline_ms=result["processing_ms"],
+                        detector_input_age_ms=result.get("input_age_ms"),
                         frame_age_ms=((self.now_ns()-result["captured_ns"])/1e6
                                       if result["captured_ns"] is not None else None),
                         confirmed_kind=result["confirmed_kind"], decision=decision, line=line,
@@ -284,8 +341,9 @@ class Controller:
         self._closed = True
         result = dict(stop_acknowledged=False, camera_closed=False, errors=[], physical_stop_verified=False)
         try:
-            self.motors.Stop(owner=self._owner)
-            result["stop_acknowledged"] = True
+            if self.dry_run or self.motors.motor_commands_sent:
+                self.motors.Stop(owner=self._owner)
+                result["stop_acknowledged"] = True
         except Exception as failure:
             result["errors"].append(str(failure))
         finally:
@@ -309,6 +367,9 @@ class Controller:
             self.start()
             deadline = None if max_seconds is None else time.monotonic()+max_seconds
             for _ in range(frames):
+                if self.stop_event.is_set():
+                    exit_reason = "OPERATOR_STOP"
+                    break
                 if deadline is not None and time.monotonic() >= deadline:
                     exit_reason = "TIME_LIMIT"
                     break
@@ -321,6 +382,10 @@ class Controller:
                     break
         except KeyboardInterrupt as interrupt:
             exit_reason = "INTERRUPTED" + (": " + str(interrupt) if str(interrupt) else "")
+        except InterruptedError:
+            if not self.stop_event.is_set():
+                raise
+            exit_reason = "OPERATOR_STOP"
         except Exception as failure:
             fault = self.adapter.camera_failed("CONTROLLER_STARTUP_OR_LOOP_FAILURE")
             decision = self._health(fault, None)
@@ -333,7 +398,8 @@ class Controller:
         finally:
             shutdown = self.shutdown()
         return dict(frames=count, exit_code=2 if shutdown["errors"] else exit_code,
-                    exit_reason=exit_reason, shutdown=shutdown, dry_run=self.dry_run, physical_stop_verified=False)
+                    exit_reason=exit_reason, shutdown=shutdown, dry_run=self.dry_run, physical_stop_verified=False,
+                    preflight_timings=self.preflight_timings)
 
 
 class SyntheticFrames:
@@ -426,7 +492,7 @@ def main(argv=None):
                 config=BlunoConfig(port=args.port, pwm_limit=pwm_limit),
                 authorization=authorization, allow_hardware=True)
         controller = Controller(source, motors=motors, enable_real_motors=real,
-                                base_pwm=base_pwm, pwm_limit=pwm_limit)
+                                base_pwm=base_pwm, pwm_limit=pwm_limit, processing_preflight=real)
         def output(result):
             print(json.dumps(result), flush=True)
             if args.preview and controller.last_image is not None:
