@@ -1,92 +1,67 @@
+"""Original centroid/PD line following, reusable without starting Webots."""
 import numpy as np
 import cv2
-from controller import Robot
-'''
--------------------------
-Initialisation Webots
--------------------------
-'''
+
 TIME_STEP = 64
-robot = Robot()
-camera = robot.getDevice("PiCam")
-camera.enable(TIME_STEP)
-'''
-Ordre des moteurs du code initial :
-Motor2 = avant gauche
-Motor1 = avant droit
-Motor4 = arrière gauche
-Motor3 = arrière droit
-'''
-motors = []
-motors_names = ["Motor2", "Motor1", "Motor4", "Motor3"]
-for name in motors_names:
-    motor = robot.getDevice(name)
-    motor.setPosition(float("inf"))
-    motor.setVelocity(0.0)
-    motors.append(motor)
-'''
--------------------------
-Paramètres du suivi
--------------------------
-'''
 BASE_SPEED = 4.0
 KP = 0.04
 KD = 0.015
-previous_error = 0
 MAX_SPEED = 10.0
-'''
--------------------------
-Commande des moteurs
--------------------------
-'''
-def set_motors(left_speed, right_speed):
-    left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
-    right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
-    motors[0].setVelocity(left_speed)
-    motors[2].setVelocity(left_speed)
-    motors[1].setVelocity(right_speed)
-    motors[3].setVelocity(right_speed)
-'''
--------------------------
-Boucle principale
--------------------------
-'''
-while robot.step(TIME_STEP) != -1:
-    # 1. Récupération de l'image
-    cameraData = camera.getImage()
-    image = np.frombuffer(
-    cameraData, np.uint8
-    ).reshape(
-    (camera.getHeight(), camera.getWidth(), 4)
-    )
-    # 2. Conversion en niveaux de gris
-    gray = cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
-    h, w = gray.shape
-    # 3. Sélection de la zone basse de l'image
-    roi = gray[int(h * 0.70):h, :]
-    # 4. Détection de la piste blanche
-    _, binary = cv2.threshold(
-    roi, 80, 255, cv2.THRESH_BINARY
-    )
-    # 5. Calcul du barycentre de la piste
-    moments = cv2.moments(binary)
-    if moments["m00"] > 0:
-        cx = int(moments["m10"] / moments["m00"])
-        error = cx - w / 2
-        derivative = error - previous_error
-        correction = KP * error + KD * derivative
-        previous_error = error
-        left_speed = BASE_SPEED + correction
-        right_speed = BASE_SPEED - correction
-        set_motors(left_speed, right_speed)
-        cv2.circle(
-        binary,
-        (cx, binary.shape[0] // 2),
-        5, 128, -1
-        )
-    else:
-        set_motors(0, 0)
-    # Affichage
-    cv2.imshow("Camera", image)
-    cv2.imshow("Detection ligne", binary)
-    cv2.waitKey(1)
+MOTOR_NAMES = ("Motor2", "Motor1", "Motor4", "Motor3")
+
+
+class LineFollower:
+    """Same bottom-30% threshold, centroid, gains and wheel limits as the original.
+
+    update accepts a uint8 BGR frame and returns left/right rad/s plus the
+    annotated binary ROI. Missing line => zero speeds, retaining previous error.
+    This class owns no Webots devices and sends no motor commands.
+    """
+    def __init__(self):
+        self.previous_error = 0
+
+    def update(self, image):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        roi = gray[int(h * 0.70):h, :]
+        _, binary = cv2.threshold(roi, 80, 255, cv2.THRESH_BINARY)
+        moments = cv2.moments(binary)
+        if moments["m00"] > 0:
+            cx = int(moments["m10"] / moments["m00"])
+            error = cx - w / 2
+            derivative = error - self.previous_error
+            correction = KP * error + KD * derivative
+            self.previous_error = error
+            left_speed = BASE_SPEED + correction
+            right_speed = BASE_SPEED - correction
+            left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
+            right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+            cv2.circle(binary, (cx, binary.shape[0] // 2), 5, 128, -1)
+        else:
+            left_speed = right_speed = 0
+        return left_speed, right_speed, binary
+
+
+def main():
+    from controller import Robot
+    robot = Robot()
+    camera = robot.getDevice("PiCam")
+    camera.enable(TIME_STEP)
+    motors = [robot.getDevice(name) for name in MOTOR_NAMES]
+    for motor in motors:
+        motor.setPosition(float("inf"))
+        motor.setVelocity(0.0)
+    follower = LineFollower()
+    while robot.step(TIME_STEP) != -1:
+        image = np.frombuffer(camera.getImage(), np.uint8).reshape(
+            camera.getHeight(), camera.getWidth(), 4)
+        left, right, binary = follower.update(cv2.cvtColor(image, cv2.COLOR_BGRA2BGR))
+        for motor, speed in zip(motors, (left, right, left, right)):
+            motor.setVelocity(speed)
+        cv2.imshow("Camera", image)
+        cv2.imshow("Detection ligne", binary)
+        cv2.waitKey(1)
+
+
+if __name__ == "__main__":
+    main()
