@@ -2,7 +2,10 @@ import numpy as np
 import cv2
 import time
 
+print("version flip")
+
 from picamera2 import Picamera2
+from libcamera import Transform
 from arduino import arduino
 
 
@@ -13,7 +16,8 @@ from arduino import arduino
 camera = Picamera2()
 camera.configure(
     camera.create_preview_configuration(
-        main={"format": "RGB888", "size": (320, 240)}
+        main={"format": "RGB888", "size": (320, 240)},
+        transform=Transform(hflip=1, vflip=1)
     )
 )
 camera.start()
@@ -124,8 +128,8 @@ try:
 
             correction = KP * error + KI * integral + KD * derivative
 
-            left_speed = BASE_SPEED - correction
-            right_speed = BASE_SPEED + correction
+            left_speed = BASE_SPEED + correction
+            right_speed = BASE_SPEED - correction
 
             left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
             right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
