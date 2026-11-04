@@ -13,6 +13,9 @@ extern Motor RLmotor;
 extern long int volatile CoderCount[4] ; 
 extern bool obst;
 extern MyServo frontservo;
+extern volatile unsigned long pulseDuration;  /// ajout URM, les 3 lignes
+extern volatile unsigned long lastEchoMicros;
+extern int distanceInCm;
 
 int value[4] = {0,0,0,0};  // 'signed PWM' values between -255 and 255
 int setpoint[4] = {0,0,0,0}; // PWM setpoints between -255 and 255
@@ -20,17 +23,17 @@ unsigned char deltaMax = 10;  // maximum gap between 2 successive values
 
 // gestion du multitache. définition de la période de chaque tache
 // definition du nombre de taches maximales
-#define numtask 3
-int deltask[numtask]={0,1000,500} ;
-int timtask[numtask] ;
-bool taskon[numtask]={true,false,true} ;
-void task0(); // tache permanente de lecture de la liaison série 
-void task1(); // tache du chien de garde
-void task2(); // tache de transition douce pour les moteurs
-
-
-void (*NameTask[numtask])() = {  task0,task1,task2  };
-
+#define numtask 4   // ajout URM, 4 au lieu de 3 
+int deltask[numtask] = {0, 1000, 500, 50};
+int timtask[numtask];
+bool taskon[numtask] = {true, false, true, false};
+void task0();
+void task1();
+void task2();
+void task3();
+void (*NameTask[numtask])() = {
+  task0, task1, task2, task3
+};
 ///////////////////////////////////////////////////////////////////////////
 //   mise en route et arret des taches périodiques
 /////////////////////////////////////////////////////////////////////////
@@ -88,22 +91,50 @@ void task1() {
 }
 
 void task2() {
-  for (int i=0; i<4; i++) {
-    if (value[i] < setpoint[i])
-      if (value[i] > (setpoint[i]-deltaMax) )
+  for (int i = 0; i < 4; i++) {
+    if (value[i] < setpoint[i]) {
+      if (value[i] > (setpoint[i] - deltaMax))
         value[i] = setpoint[i];
       else
         value[i] += deltaMax;
-    else
-      if (value[i] < (setpoint[i]+deltaMax) )
+    }
+    else {
+      if (value[i] < (setpoint[i] + deltaMax))
         value[i] = setpoint[i];
       else
         value[i] -= deltaMax;
+    }
   }
-  
-  FRmotor.setvalue(value[0]); // after updating the value to improve reactivity to new setpoints 
+
+  FRmotor.setvalue(value[0]);
   FLmotor.setvalue(value[1]);
   RRmotor.setvalue(value[2]);
   RLmotor.setvalue(value[3]);
 }
 
+// Tache 3 : actualisation de la distance ultrason //ajout URM, task3
+void task3() {
+  unsigned long duration;
+  unsigned long lastEcho;
+
+  noInterrupts();
+  duration = pulseDuration;
+  lastEcho = lastEchoMicros;
+  interrupts();
+
+  if (lastEcho == 0 ||
+      (unsigned long)(micros() - lastEcho) > 150000UL ||
+      duration == 0) {
+    distanceInCm = -1;
+    return;
+  }
+
+  unsigned long distance = duration / 50;
+
+  if (distance < 4 || distance > 500) {
+    distanceInCm = -1;
+  }
+  else {
+    distanceInCm = (int)distance;
+  }
+}

@@ -51,6 +51,19 @@ long int volatile CoderCount[4] = {0,0,0,0};
 // gestion du servomoteur
 MyServo frontservo(ServofrontPin,30,150,10);
 
+// ------------------------- // ajout URM
+// CAPTEUR ULTRASON URM37
+// -------------------------
+
+const int URM_ECHO = 2;
+
+// Variables partagées avec l'interruption
+volatile unsigned long pulseStart = 0;
+volatile unsigned long pulseDuration = 0;
+volatile unsigned long lastEchoMicros = 0;
+
+// Distance disponible pour les autres fichiers
+int distanceInCm = -1;
 
 ///////////////////////////////////////////////////////////////////////////
 //
@@ -71,18 +84,21 @@ void init_arduino() {
   obst=false ;
   TaskOn(0) ;     // on allume la tache permanente de lecture de la liaison série
   TaskOn(2) ;     // on allume la tache transition douce pour les moteurs
+  TaskOn(3);
 }
-
+void timeEcho(); // ajout URM, 1 ligne
 void setup() {
   Serial.begin(SERIAL_BAUD);
   Serial.setTimeout(SERIAL_TIMEOUT); // timeout pour attendre une fin de message
-
+  pinMode(URM_ECHO, INPUT_PULLUP);      //ajout URm, 2 lige-nes                                  // interruption capteur UR
+  attachInterrupt(digitalPinToInterrupt(URM_ECHO),timeEcho,CHANGE); 
   init_arduino() ;
 
   attachInterrupt(digitalPinToInterrupt(Encoder1B), FRcoderISR, FALLING); // interrupt attachment for encoder routines
   attachInterrupt(digitalPinToInterrupt(Encoder2B), FLcoderISR, FALLING); 
   attachInterrupt(digitalPinToInterrupt(Encoder3B), RRcoderISR, FALLING); 
-  attachInterrupt(digitalPinToInterrupt(Encoder4B), RLcoderISR, FALLING); 
+  attachInterrupt(digitalPinToInterrupt(Encoder4B), RLcoderISR, FALLING); // ajout URM
+
 }
 
 ////////////////////////////////////////////////////////////
@@ -118,3 +134,15 @@ void RLcoderISR() {
   CoderCount[3] += ((digitalRead(Encoder4A) == LOW) ? +1 : -1);       
 }
 
+void timeEcho() { // ajout URM
+  unsigned long now = micros();
+
+  if (digitalRead(URM_ECHO) == LOW) {
+    pulseStart = now;
+  }
+  else if (pulseStart != 0) {
+    pulseDuration = now - pulseStart;
+    lastEchoMicros = now;
+    pulseStart = 0;
+  }
+}
