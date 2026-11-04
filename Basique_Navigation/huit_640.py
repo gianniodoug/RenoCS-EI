@@ -42,7 +42,7 @@ previous_error = 0
 MAX_SPEED = 255
 
 # Paramètres de recherche de ligne
-SEARCH_SPEED = 25
+SEARCH_SPEED = 40
 MAX_SEARCH_TIME = 1.0
 lost_since = None
 last_error_sign = 1
@@ -63,18 +63,17 @@ try:
         h, w = gray.shape
 
         # 3. Selection de la zone basse
-        roi = gray[int(h * 0.7):h, :]
+        roi = gray[int(h * 0.2):int(h * 0.7), :]
 
         # 4. Detection de la ligne blanche
         _, binary = cv2.threshold(
             roi, 80, 255, cv2.THRESH_BINARY
         )
 
-        # 5. Positions des trois lignes de balayage
+        # 5. Positions des huit lignes de balayage
         scan_positions = [
-            int(binary.shape[0] * 0.9),
-            int(binary.shape[0] * 0.75),
-            int(binary.shape[0] * 0.6)
+            int(binary.shape[0] * f)
+            for f in np.linspace(0.1, 0.9, 8)
         ]
 
         centers = []
@@ -151,8 +150,8 @@ try:
 
                 # Rotation sur place vers le dernier cote connu
                 robot.SetMotors(
-                    -last_error_sign * SEARCH_SPEED,
-                    last_error_sign * SEARCH_SPEED
+                    last_error_sign * SEARCH_SPEED,
+                    -last_error_sign * SEARCH_SPEED
                 )
 
             else:

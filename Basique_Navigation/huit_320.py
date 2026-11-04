@@ -1,6 +1,3 @@
-# huit_PD_rabat_rapide.py : base huit_PD_rabat.py
-# + image 320x240, ralentissement en virage, gains adaptes a la vitesse,
-#   rabat dans le bon sens, affichage desactivable
 import numpy as np
 import cv2
 import time
@@ -38,23 +35,14 @@ if not robot.connect():
 # PARAMETRES DU SUIVI
 # -------------------------
 
-BASE_SPEED = 100          # vitesse en ligne droite : on peut monter (100, 120...)
-MIN_SPEED = 60            # vitesse minimale dans les virages serres
-SLOWDOWN = 0.6            # 0 = pas de ralentissement ; 0.6 = -60 % quand la ligne est au bord
-
-# Gains regles a 60 PWM, la ou le suivi marche bien.
-# Image 320 px : memes gains que 0.04 / 0.015 a 640 px.
+BASE_SPEED = 100
 KP = 0.08
 KD = 0.03
-TUNED_SPEED = 60          # vitesse a laquelle KP / KD ont ete regles
-
 previous_error = 0
 MAX_SPEED = 255
 
-SHOW_DEBUG = True         # False pendant les essais rapides : boucle plus rapide
-
 # Paramètres de recherche de ligne
-SEARCH_SPEED = 45         # 25 etait trop faible pour faire tourner les moteurs
+SEARCH_SPEED = 40
 MAX_SEARCH_TIME = 1.0
 lost_since = None
 last_error_sign = 1
@@ -75,18 +63,17 @@ try:
         h, w = gray.shape
 
         # 3. Selection de la zone basse
-        roi = gray[int(h * 0.7):h, :]
+        roi = gray[int(h * 0.2):int(h * 0.7), :]
 
         # 4. Detection de la ligne blanche
         _, binary = cv2.threshold(
             roi, 80, 255, cv2.THRESH_BINARY
         )
 
-        # 5. Positions des trois lignes de balayage
+        # 5. Positions des huit lignes de balayage
         scan_positions = [
-            int(binary.shape[0] * 0.9),
-            int(binary.shape[0] * 0.75),
-            int(binary.shape[0] * 0.6)
+            int(binary.shape[0] * f)
+            for f in np.linspace(0.1, 0.9, 8)
         ]
 
         centers = []
@@ -123,12 +110,7 @@ try:
             error = cx - w / 2
             derivative = error - previous_error
 
-            # Vitesse : on ralentit quand la ligne s'eloigne du centre (virage)
-            speed = BASE_SPEED * (1 - SLOWDOWN * min(1.0, abs(error) / (w / 2)))
-            speed = max(MIN_SPEED, speed)
-
-            # Correction proportionnelle a la vitesse : meme courbure qu'a 60 PWM
-            correction = (KP * error + KD * derivative) * (speed / TUNED_SPEED)
+            correction = KP * error + KD * derivative
             previous_error = error
 
             # Memorisation du dernier cote de la ligne
@@ -138,8 +120,8 @@ try:
             # Ligne retrouvee : reinitialisation de la recherche
             lost_since = None
 
-            left_speed = speed + correction
-            right_speed = speed - correction
+            left_speed = BASE_SPEED + correction
+            right_speed = BASE_SPEED - correction
 
             # Limitation des commandes
             left_speed = int(max(
@@ -167,7 +149,6 @@ try:
             if time.time() - lost_since < MAX_SEARCH_TIME:
 
                 # Rotation sur place vers le dernier cote connu
-                # Meme sens que la correction PD (left = speed + correction)
                 robot.SetMotors(
                     last_error_sign * SEARCH_SPEED,
                     -last_error_sign * SEARCH_SPEED
@@ -177,10 +158,7 @@ try:
                 # Arret si la ligne n'est pas retrouvee
                 robot.Stop()
 
-        # 8. Affichage (desactivable : imshow ralentit beaucoup la boucle)
-        if not SHOW_DEBUG:
-            continue
-
+        # 8. Affichage
         cv2.imshow("Camera", image)
         cv2.imshow("Detection ligne", binary)
 
